@@ -22,6 +22,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "quantum-mlir/Dialect/Quantum/IR/QuantumBase.h"
 #include "quantum-mlir/Dialect/Quantum/IR/QuantumTypes.h"
+#include "quantum-mlir/Dialect/Quantum/Interfaces/GateOpInterface.h"
 #include "quantum-mlir/Dialect/Quantum/Interfaces/InferRegisterRangesInterface.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -31,11 +32,7 @@
 namespace mlir {
 namespace quantum {
 
-void buildTerminatedBody(
-    OpBuilder &builder,
-    Location loc,
-    Value condition,
-    ValueRange capturedArgs);
+void buildTerminatedBody(OpBuilder &builder, Location loc, Value condition, ValueRange capturedArgs);
 
 template<typename ConcreteType>
 class NoClone : public OpTrait::TraitBase<ConcreteType, NoClone> {
@@ -48,10 +45,7 @@ class Hermitian : public OpTrait::TraitBase<ConcreteType, Hermitian> {
 public:
     /// Override the 'foldTrait' hook to support trait based folding on the
     /// concrete operation.
-    static LogicalResult foldTrait(
-        Operation* op,
-        ArrayRef<Attribute> operands,
-        SmallVectorImpl<OpFoldResult> &results);
+    static LogicalResult foldTrait(Operation* op, ArrayRef<Attribute> operands, SmallVectorImpl<OpFoldResult> &results);
 };
 
 template<typename ConcreteType>
@@ -59,10 +53,7 @@ class Unitary : public OpTrait::TraitBase<ConcreteType, Unitary> {
 public:
     /// Override the 'foldTrait' hook to support trait based folding on the
     /// concrete operation.
-    static LogicalResult foldTrait(
-        Operation* op,
-        ArrayRef<Attribute> operands,
-        SmallVectorImpl<OpFoldResult> &results);
+    static LogicalResult foldTrait(Operation* op, ArrayRef<Attribute> operands, SmallVectorImpl<OpFoldResult> &results);
 };
 
 template<typename AdjointToType>
@@ -70,10 +61,7 @@ class AdjointTo {
 public:
     template<typename ConcreteType>
     struct Impl : public OpTrait::TraitBase<ConcreteType, Impl> {
-        static constexpr ::llvm::StringLiteral getAdjointOperationName()
-        {
-            return ConcreteType::getOperationName();
-        }
+        static constexpr ::llvm::StringLiteral getAdjointOperationName() { return ConcreteType::getOperationName(); }
     };
 };
 

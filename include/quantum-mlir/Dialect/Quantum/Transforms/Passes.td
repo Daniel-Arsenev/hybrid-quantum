@@ -27,4 +27,13 @@ def HermitianCancel : Pass<"hermitian-cancel", "ModuleOp"> {
   let constructor = "mlir::quantum::createHermitianCancelPass()";
 }
 
+def CircuitCutAnalysis : Pass<"circuit-cut-analysis", "func::FuncOp"> {
+  let summary = "Circuit cut analysis on the `quantum` dialect";
+
+  let description = [{
+  }];
+
+  let constructor = "mlir::quantum::createCircuitCutAnalysisPass()";
+}
+
 #endif // QUANTUM_PASSES

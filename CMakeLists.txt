@@ -49,6 +49,9 @@ find_package(MLIR 20.1.7 EXACT REQUIRED CONFIG)
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
+# Find OR-Tools
+find_package(ortools CONFIG REQUIRED)
+
 # Load LLVM and MLIR CMake modules.
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")

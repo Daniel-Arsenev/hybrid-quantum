@@ -245,6 +245,12 @@ pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,cmake,c++,python
 
+# clang specifics
+.clangd
+
+# dev container
+.devcontainer/*
+
 __pycache__
 
 # Allow codegen for target languages

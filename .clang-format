@@ -51,7 +51,9 @@ BreakBeforeTernaryOperators: true
 BreakConstructorInitializers: BeforeColon
 BreakInheritanceList: BeforeColon
 BreakStringLiterals: true
-ColumnLimit: 80
+ColumnLimit: 120
+InsertBraces: true
+PenaltyReturnTypeOnItsOwnLine: 1000000
 CompactNamespaces: false
 ConstructorInitializerIndentWidth: 8
 ContinuationIndentWidth: 4
@@ -80,7 +82,6 @@ PointerAlignment: Left
 QualifierAlignment: Left
 ReferenceAlignment: Right
 ReflowComments: true
-RemoveBracesLLVM: true
 #RequiresClausePosition: OwnLine
 SeparateDefinitionBlocks: Leave
 ShortNamespaceLines: 0

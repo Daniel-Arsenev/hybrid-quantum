@@ -70,6 +70,11 @@ To use the frontend You can install the dependency to your virtual environment
 uv pip install -r ./frontend/requirements.txt
 ```
 
+The project uses [OR-Tools](https://developers.google.com/optimization) version `9.15` 
+
+The easiest way to install it is to download the pre-built C++ binary for your platform from the [OR-Tools releases page](https://github.com/google/or-tools/releases/tag/v9.15) and unpack it. 
+
+
 As a backend it supports [QIR Runner](https://github.com/qir-alliance/qir-runner) in version `0.7.6`.
 QIR runner is a Rust library providing an implementation of the QIR spec.
 
@@ -89,6 +94,7 @@ uv pip install -r frontend/requirements.txt
 # Configure
 cmake -S . -B build \
    -G Ninja \
+   -DCMAKE_PREFIX_PATH=/opt/or-tools \
    -DLLVM_DIR=$LLVM_PREFIX/build/lib/cmake/llvm \
    -DMLIR_DIR=$LLVM_PREFIX/build/lib/cmake/mlir \
    -DPython3_EXECUTABLE="$VENV_DIR/bin/python3" \

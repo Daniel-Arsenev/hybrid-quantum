@@ -9,6 +9,7 @@
 
 include "quantum-mlir/Dialect/Quantum/IR/QuantumTypes.td"
 include "quantum-mlir/Dialect/Quantum/Interfaces/InferRegisterRangesInterface.td"
+include "quantum-mlir/Dialect/Quantum/Interfaces/GateOpInterface.td"
 include "mlir/Interfaces/CastInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/IR/SymbolInterfaces.td"
@@ -372,7 +373,7 @@ def Quantum_MergeOp : Memory_Op<
 //===----------------------------------------------------------------------===//
 
 class PrimitiveGate_Op<string mnemonic, list<Trait> traits = []> :
-        Gate_Op<mnemonic, traits # [NoClone]>;
+        Gate_Op<mnemonic, traits # [NoClone, GateOpInterface]>;
 
 //===----------------------------------------------------------------------===//
 // Single qubit gate operations.

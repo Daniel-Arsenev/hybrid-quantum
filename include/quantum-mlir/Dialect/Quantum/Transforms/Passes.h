@@ -26,9 +26,7 @@ void populateQuantumOptimisePatterns(RewritePatternSet &patterns);
 
 void populateHermitianCancelPatterns(RewritePatternSet &patterns);
 
-void populateScfToRVSDGPatterns(
-    TypeConverter converter,
-    RewritePatternSet &patterns);
+void populateScfToRVSDGPatterns(TypeConverter converter, RewritePatternSet &patterns);
 
 /// Constructs the lower-funnel-shift pass.
 std::unique_ptr<Pass> createQuantumOptimisePass();
@@ -37,6 +35,8 @@ std::unique_ptr<Pass> createQuantumOptimisePass();
 std::unique_ptr<Pass> createHermitianCancelPass();
 
 std::unique_ptr<Pass> createScfToRVSDGPass();
+
+std::unique_ptr<Pass> createCircuitCutAnalysisPass();
 
 //===----------------------------------------------------------------------===//
 // Registration
