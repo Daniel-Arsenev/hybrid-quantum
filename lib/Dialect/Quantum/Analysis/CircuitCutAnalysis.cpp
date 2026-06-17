@@ -377,6 +377,9 @@ CutSolution solveCircuitCut(const CircuitGraph &graph, CircuitCutOptions options
                   subGateSubcircuits[destSubGateIndex][subCircuitIndex],
                   subGateSubcircuits[sourceSubGateIndex][subCircuitIndex])
                 .OnlyEnforceIf(wireCut[wireIndex].Not());
+            cp.AddBoolOr({subGateSubcircuits[sourceSubGateIndex][subCircuitIndex].Not(),
+                          subGateSubcircuits[destSubGateIndex][subCircuitIndex].Not()})
+                .OnlyEnforceIf(wireCut[wireIndex]);
         }
     }
 
@@ -396,8 +399,11 @@ CutSolution solveCircuitCut(const CircuitGraph &graph, CircuitCutOptions options
             continue;
         }
         const SubGateIndex firstSubGateIndex = gate.subGates[0];
+        auto differsFromFirst = std::vector<BoolVar>();
         for (size_t i = 1; i < gate.subGates.size(); ++i) {
             const SubGateIndex otherSubGateIndex = gate.subGates[i];
+            auto differs = cp.NewBoolVar();
+            differsFromFirst.push_back(differs);
             for (SubCircuitIndex subCircuitIndex = 0; subCircuitIndex < maxSubcircuitCount; ++subCircuitIndex) {
                 cp.AddImplication(
                       subGateSubcircuits[firstSubGateIndex][subCircuitIndex],
@@ -407,8 +413,12 @@ CutSolution solveCircuitCut(const CircuitGraph &graph, CircuitCutOptions options
                       subGateSubcircuits[otherSubGateIndex][subCircuitIndex],
                       subGateSubcircuits[firstSubGateIndex][subCircuitIndex])
                     .OnlyEnforceIf(gateCut[gateIndex].Not());
+                cp.AddBoolOr({subGateSubcircuits[firstSubGateIndex][subCircuitIndex].Not(),
+                              subGateSubcircuits[otherSubGateIndex][subCircuitIndex].Not()})
+                    .OnlyEnforceIf(differs);
             }
         }
+        cp.AddBoolOr(differsFromFirst).OnlyEnforceIf(gateCut[gateIndex]);
     }
 
     // even if cutting is allowed, gates feeding into measurements cannot be gate-cut
@@ -449,12 +459,14 @@ CutSolution solveCircuitCut(const CircuitGraph &graph, CircuitCutOptions options
             }
             for (WireIndex wireIndex = 0; wireIndex < wireCount; ++wireIndex) {
                 const SubGateIndex destSubGateIndex = graph.wires[wireIndex].to;
-                const auto cutIntoSubCircuit = cp.NewBoolVar();
-                cp.AddBoolAnd({wireCut[wireIndex], subGateSubcircuits[destSubGateIndex][subCircuitIndex]})
-                    .OnlyEnforceIf(cutIntoSubCircuit);
-                cp.AddBoolOr({wireCut[wireIndex].Not(), subGateSubcircuits[destSubGateIndex][subCircuitIndex].Not()})
-                    .OnlyEnforceIf(cutIntoSubCircuit.Not());
-                width += cutIntoSubCircuit;
+                // a cut wire leaves its destination with no incoming wire inside this
+                // subcircuit, so the destination is allocated here.
+                const auto allocatedByCut = cp.NewBoolVar();
+                cp.AddBoolOr(
+                    {wireCut[wireIndex].Not(),
+                     subGateSubcircuits[destSubGateIndex][subCircuitIndex].Not(),
+                     allocatedByCut});
+                width += allocatedByCut;
             }
             cp.AddLessOrEqual(width, options.targetWidth);
         }
@@ -463,31 +475,23 @@ CutSolution solveCircuitCut(const CircuitGraph &graph, CircuitCutOptions options
     // width is the number of qubit lines in a subcircuit
     else if (options.reusePolicy == QubitLineReuse) {
         const uint64_t lineCount = graph.qubitLines.size();
-        auto lineInSubcircuit = std::vector<std::vector<BoolVar>>(lineCount, std::vector<BoolVar>(maxSubcircuitCount));
+        auto width = std::vector<LinearExpr>(maxSubcircuitCount);
         for (LineIndex lineIndex = 0; lineIndex < lineCount; ++lineIndex) {
-            const auto &line = graph.qubitLines[lineIndex];
             for (SubCircuitIndex subCircuitIndex = 0; subCircuitIndex < maxSubcircuitCount; ++subCircuitIndex) {
-                lineInSubcircuit[lineIndex][subCircuitIndex] = cp.NewBoolVar();
-                std::vector<BoolVar> subGatesInSubcircuit;
-                for (SubGateIndex subGateIndex : line) {
-                    subGatesInSubcircuit.push_back(subGateSubcircuits[subGateIndex][subCircuitIndex]);
+                // lineInSubcircuit is true if some subgate of the line is in this subcircuit.
+                BoolVar lineInSubcircuit = cp.NewBoolVar();
+                for (SubGateIndex subGateIndex : graph.qubitLines[lineIndex]) {
+                    cp.AddImplication(subGateSubcircuits[subGateIndex][subCircuitIndex], lineInSubcircuit);
                 }
-                cp.AddBoolOr(subGatesInSubcircuit).OnlyEnforceIf(lineInSubcircuit[lineIndex][subCircuitIndex]);
-                for (BoolVar subGateVar : subGatesInSubcircuit) {
-                    cp.AddImplication(subGateVar, lineInSubcircuit[lineIndex][subCircuitIndex]);
-                }
+                width[subCircuitIndex] += lineInSubcircuit;
             }
         }
         for (SubCircuitIndex subCircuitIndex = 0; subCircuitIndex < maxSubcircuitCount; ++subCircuitIndex) {
-            LinearExpr width;
-            for (LineIndex lineIndex = 0; lineIndex < lineCount; ++lineIndex) {
-                width += lineInSubcircuit[lineIndex][subCircuitIndex];
-            }
-            cp.AddLessOrEqual(width, options.targetWidth);
+            cp.AddLessOrEqual(width[subCircuitIndex], options.targetWidth);
         }
     }
 
-    // width is determined by graph coloring
+    // width is determined by qubit reuse
     else if (options.reusePolicy == ComplexReuse) {
         // step 1: determine the sources and sinks of all sub circuits
         // a subgate is allocated iff
@@ -527,29 +531,24 @@ CutSolution solveCircuitCut(const CircuitGraph &graph, CircuitCutOptions options
             }
         }
 
-        // step 2: determine the allocated node - destroyed node reachability
-        // allocated node a and destroyed node b are reachable iff there exists a
-        // path from a to b of nodes (wires and gates or just wires) that are all in the same subcircuit
+        // step 2: subgate reachability within a subcircuit.
+        // subgate b is reachable from subgate a iff there is a path from a to b
+        // along wire edges and gate edges that are all uncut (and hence all in the
+        // same subcircuit). this is the data dependence that rules out reuse.
         auto combinedReachMatrix = std::vector<std::vector<BoolVar>>(subGateCount, std::vector<BoolVar>(subGateCount));
-        auto wireReachMatrix = std::vector<std::vector<BoolVar>>(subGateCount, std::vector<BoolVar>(subGateCount));
         for (SubGateIndex startSubGateIndex = 0; startSubGateIndex < subGateCount; ++startSubGateIndex) {
             for (SubGateIndex endSubGateIndex = 0; endSubGateIndex < subGateCount; ++endSubGateIndex) {
                 combinedReachMatrix[startSubGateIndex][endSubGateIndex] = cp.NewBoolVar();
-                wireReachMatrix[startSubGateIndex][endSubGateIndex] = cp.NewBoolVar();
             }
         }
-        // base case: wire edges (both)
+        // base case: wire edges
         for (WireIndex wireIndex = 0; wireIndex < wireCount; ++wireIndex) {
             SubGateIndex sourceSubGateIndex = graph.wires[wireIndex].from;
             SubGateIndex destSubGateIndex = graph.wires[wireIndex].to;
-
             cp.AddImplication(combinedReachMatrix[sourceSubGateIndex][destSubGateIndex], wireCut[wireIndex].Not());
             cp.AddImplication(wireCut[wireIndex].Not(), combinedReachMatrix[sourceSubGateIndex][destSubGateIndex]);
-
-            cp.AddImplication(wireReachMatrix[sourceSubGateIndex][destSubGateIndex], wireCut[wireIndex].Not());
-            cp.AddImplication(wireCut[wireIndex].Not(), wireReachMatrix[sourceSubGateIndex][destSubGateIndex]);
         }
-        // base case: gate edges (combined only)
+        // base case: gate edges
         for (GateIndex gateIndex = 0; gateIndex < graph.gates.size(); ++gateIndex) {
             const Gate &gate = graph.gates[gateIndex];
             for (size_t i = 0; i < gate.subGates.size(); ++i) {
@@ -561,7 +560,7 @@ CutSolution solveCircuitCut(const CircuitGraph &graph, CircuitCutOptions options
                 }
             }
         }
-        // inductive case (both)
+        // inductive case
         for (SubGateIndex midSubGateIndex = 0; midSubGateIndex < subGateCount; ++midSubGateIndex) {
             for (SubGateIndex startSubGateIndex = 0; startSubGateIndex < subGateCount; ++startSubGateIndex) {
                 for (SubGateIndex endSubGateIndex = 0; endSubGateIndex < subGateCount; ++endSubGateIndex) {
@@ -573,50 +572,94 @@ CutSolution solveCircuitCut(const CircuitGraph &graph, CircuitCutOptions options
                         .OnlyEnforceIf(
                             {combinedReachMatrix[startSubGateIndex][midSubGateIndex],
                              combinedReachMatrix[midSubGateIndex][endSubGateIndex]});
-
-                    cp.AddBoolAnd({wireReachMatrix[startSubGateIndex][endSubGateIndex]})
-                        .OnlyEnforceIf(
-                            {wireReachMatrix[startSubGateIndex][midSubGateIndex],
-                             wireReachMatrix[midSubGateIndex][endSubGateIndex]});
                 }
             }
         }
 
-        // step 3:
-        // n color the circuit graph where n is the target width
-        // there are the following restrictions on color
-        // 1) nodes connected by a wire must have the same color, provided they are in the same subcircuit
-        // 2) an allocated node may not share a color with a destroyed node of a different qubit line it can reach
-        auto qubitColor = std::vector<std::vector<BoolVar>>(subGateCount, std::vector<BoolVar>(options.targetWidth));
+        // step 3: qubit reuse.
+        // reuse[d][a] is true iff the physical qubit freed when subgate d is
+        // destroyed is reused by the partial qubit line that begins at allocated subgate a.
+        // a reuse is legal only if d is destroyed, a is allocated, both are in the
+        // same subcircuit, and there is no path from a to d.
+        auto reuses = std::vector<std::vector<BoolVar>>(subGateCount, std::vector<BoolVar>(subGateCount));
+        auto incomingReuse = std::vector<LinearExpr>(subGateCount);
+        auto outgoingReuse = std::vector<LinearExpr>(subGateCount);
+        for (SubGateIndex destroyedSubGateIndex = 0; destroyedSubGateIndex < subGateCount; ++destroyedSubGateIndex) {
+            for (SubGateIndex allocatedSubGateIndex = 0; allocatedSubGateIndex < subGateCount;
+                 ++allocatedSubGateIndex) {
+                if (allocatedSubGateIndex == destroyedSubGateIndex) { continue; }
+                reuses[destroyedSubGateIndex][allocatedSubGateIndex] = cp.NewBoolVar();
+                cp.AddImplication(
+                    reuses[destroyedSubGateIndex][allocatedSubGateIndex],
+                    isDestroyed[destroyedSubGateIndex]);
+                cp.AddImplication(
+                    reuses[destroyedSubGateIndex][allocatedSubGateIndex],
+                    isAllocated[allocatedSubGateIndex]);
+                cp.AddImplication(
+                    reuses[destroyedSubGateIndex][allocatedSubGateIndex],
+                    combinedReachMatrix[allocatedSubGateIndex][destroyedSubGateIndex].Not());
+                for (SubCircuitIndex subCircuitIndex = 0; subCircuitIndex < maxSubcircuitCount; ++subCircuitIndex) {
+                    cp.AddImplication(
+                          subGateSubcircuits[destroyedSubGateIndex][subCircuitIndex],
+                          subGateSubcircuits[allocatedSubGateIndex][subCircuitIndex])
+                        .OnlyEnforceIf(reuses[destroyedSubGateIndex][allocatedSubGateIndex]);
+                    cp.AddImplication(
+                          subGateSubcircuits[allocatedSubGateIndex][subCircuitIndex],
+                          subGateSubcircuits[destroyedSubGateIndex][subCircuitIndex])
+                        .OnlyEnforceIf(reuses[destroyedSubGateIndex][allocatedSubGateIndex]);
+                }
+                incomingReuse[allocatedSubGateIndex] += reuses[destroyedSubGateIndex][allocatedSubGateIndex];
+                outgoingReuse[destroyedSubGateIndex] += reuses[destroyedSubGateIndex][allocatedSubGateIndex];
+            }
+        }
+        // each freed qubit is reused at most once, and each partial qubit line
+        // reuses at most one freed qubit. reusesQubit[a] is whether partial qubit
+        // line a reuses an earlier freed qubit (and so does not need a fresh one).
+        auto reusesQubit = std::vector<BoolVar>(subGateCount);
         for (SubGateIndex subGateIndex = 0; subGateIndex < subGateCount; ++subGateIndex) {
-            for (int32_t colorIndex = 0; colorIndex < options.targetWidth; ++colorIndex) {
-                qubitColor[subGateIndex][colorIndex] = cp.NewBoolVar();
-            }
-            cp.AddExactlyOne(qubitColor[subGateIndex]);
+            reusesQubit[subGateIndex] = cp.NewBoolVar();
+            cp.AddEquality(reusesQubit[subGateIndex], incomingReuse[subGateIndex]);
+            cp.AddLessOrEqual(outgoingReuse[subGateIndex], 1);
         }
-        for (WireIndex wireIndex = 0; wireIndex < wireCount; ++wireIndex) {
-            const SubGateIndex sourceSubGateIndex = graph.wires[wireIndex].from;
-            const SubGateIndex destSubGateIndex = graph.wires[wireIndex].to;
-            for (int32_t colorIndex = 0; colorIndex < options.targetWidth; ++colorIndex) {
-                cp.AddImplication(qubitColor[sourceSubGateIndex][colorIndex], qubitColor[destSubGateIndex][colorIndex])
-                    .OnlyEnforceIf(wireCut[wireIndex].Not());
-                cp.AddImplication(qubitColor[destSubGateIndex][colorIndex], qubitColor[sourceSubGateIndex][colorIndex])
-                    .OnlyEnforceIf(wireCut[wireIndex].Not());
+        // allocFresh[a] is true iff a subGate is allocated
+        // and does not reuse an earlier freed qubit.
+        auto allocFresh = std::vector<BoolVar>(subGateCount);
+        for (SubGateIndex subGateIndex = 0; subGateIndex < subGateCount; ++subGateIndex) {
+            allocFresh[subGateIndex] = cp.NewBoolVar();
+            cp.AddBoolAnd({isAllocated[subGateIndex], reusesQubit[subGateIndex].Not()})
+                .OnlyEnforceIf(allocFresh[subGateIndex]);
+            cp.AddBoolOr({isAllocated[subGateIndex].Not(), reusesQubit[subGateIndex]})
+                .OnlyEnforceIf(allocFresh[subGateIndex].Not());
+        }
+        // reachability alone fails at independent partial qubit lines. to prevent
+        // something like "p reuses q" and "q reuses p" we introduce reuseOrder to
+        // pin down a single execution order by asserting the rank of a subgate
+        // strictly increases along every reuse edge
+        auto reuseOrder = std::vector<IntVar>(subGateCount);
+        for (SubGateIndex subGateIndex = 0; subGateIndex < subGateCount; ++subGateIndex) {
+            reuseOrder[subGateIndex] = cp.NewIntVar(operations_research::Domain(0, static_cast<int64_t>(subGateCount)));
+        }
+        for (SubGateIndex destroyedSubGateIndex = 0; destroyedSubGateIndex < subGateCount; ++destroyedSubGateIndex) {
+            for (SubGateIndex allocatedSubGateIndex = 0; allocatedSubGateIndex < subGateCount;
+                 ++allocatedSubGateIndex) {
+                if (allocatedSubGateIndex == destroyedSubGateIndex) { continue; }
+                cp.AddGreaterThan(reuseOrder[allocatedSubGateIndex], reuseOrder[destroyedSubGateIndex])
+                    .OnlyEnforceIf(reuses[destroyedSubGateIndex][allocatedSubGateIndex]);
             }
         }
-        for (SubGateIndex startSubGateIndex = 0; startSubGateIndex < subGateCount; ++startSubGateIndex) {
-            for (SubGateIndex endSubGateIndex = 0; endSubGateIndex < subGateCount; ++endSubGateIndex) {
-                if (startSubGateIndex == endSubGateIndex) { continue; }
-                for (int32_t colorIndex = 0; colorIndex < options.targetWidth; ++colorIndex) {
-                    cp.AddBoolOr({qubitColor[startSubGateIndex][colorIndex].Not(),
-                                  qubitColor[endSubGateIndex][colorIndex].Not()})
-                        .OnlyEnforceIf(
-                            {isAllocated[startSubGateIndex],
-                             isDestroyed[endSubGateIndex],
-                             combinedReachMatrix[startSubGateIndex][endSubGateIndex],
-                             wireReachMatrix[startSubGateIndex][endSubGateIndex].Not()});
-                }
+
+        // step 4: width of a subcircuit is the number of physical qubits it needs
+        for (SubCircuitIndex subCircuitIndex = 0; subCircuitIndex < maxSubcircuitCount; ++subCircuitIndex) {
+            LinearExpr width;
+            for (SubGateIndex subGateIndex = 0; subGateIndex < subGateCount; ++subGateIndex) {
+                BoolVar freshHere = cp.NewBoolVar();
+                cp.AddBoolAnd({allocFresh[subGateIndex], subGateSubcircuits[subGateIndex][subCircuitIndex]})
+                    .OnlyEnforceIf(freshHere);
+                cp.AddBoolOr({allocFresh[subGateIndex].Not(), subGateSubcircuits[subGateIndex][subCircuitIndex].Not()})
+                    .OnlyEnforceIf(freshHere.Not());
+                width += freshHere;
             }
+            cp.AddLessOrEqual(width, options.targetWidth);
         }
     }
 
@@ -641,8 +684,13 @@ CutSolution solveCircuitCut(const CircuitGraph &graph, CircuitCutOptions options
     }
     cp.Minimize(objective);
 
-    // solve
-    const CpSolverResponse resp = Solve(cp.Build());
+    // solve. pin the solver to a single worker with a fixed seed so the
+    // returned cut set is reproducible across runs.
+    SatParameters parameters;
+    parameters.set_num_workers(1);
+    parameters.set_random_seed(42);
+    const CpSolverResponse resp = SolveWithParameters(cp.Build(), parameters);
+
     if (resp.status() != CpSolverStatus::OPTIMAL && resp.status() != CpSolverStatus::FEASIBLE) { return {false, {}}; }
 
     // read the subcircuit assignment from the solver. he solver picks subcircuit
