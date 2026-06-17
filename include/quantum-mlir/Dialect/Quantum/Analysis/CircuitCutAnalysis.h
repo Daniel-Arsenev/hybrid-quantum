@@ -10,7 +10,6 @@
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/Operation.h>
 #include <mlir/IR/Value.h>
-#include <mlir/Pass/AnalysisManager.h>
 #include <set>
 #include <vector>
 
@@ -26,7 +25,7 @@ enum QubitReusePolicy {
 };
 
 struct CircuitCutOptions {
-    int32_t targetWidth;
+    int64_t targetWidth;
     bool allowGateCuts;
     bool allowWireCuts;
     QubitReusePolicy reusePolicy;
@@ -62,15 +61,15 @@ struct WireValuesLess {
     }
 };
 
-// For simplicity we consider only gate cutting of primitive two qubit gates
-// (and of those we only support a small subset). The algorithm can be expanded
-// to handle non primitive gates (for example by inlining) and to handle more
-// than two qubit gates, but that suffices for now. Also we do not consider
-// control flow and qubit reuse yet.
+// For simplicity we consider only gate cutting of primitive n qubit gates
+// (with the exception of gates that take non qubit arguments). The algorithm
+// can be expanded to handle non primitive gates (for example by inlining).
+// Also we do not consider control flow yet.
 
 class CircuitCutAnalysis {
 public:
-    CircuitCutAnalysis(Operation* op, AnalysisManager &am);
+    /// Compute the circuit cut for the given options.
+    CircuitCutAnalysis(Operation* op, const CircuitCutOptions &options);
 
     bool isFeasible() const { return feasible; }
 

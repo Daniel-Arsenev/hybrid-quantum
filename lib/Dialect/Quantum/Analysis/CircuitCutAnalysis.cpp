@@ -951,7 +951,29 @@ void printCircuitGraph(
 
 struct CircuitCutAnalysisPass : mlir::quantum::impl::CircuitCutAnalysisBase<CircuitCutAnalysisPass> {
     using CircuitCutAnalysisBase::CircuitCutAnalysisBase;
-    void runOnOperation() override { getAnalysis<CircuitCutAnalysis>(); }
+    void runOnOperation() override
+    {
+        auto analysis = CircuitCutAnalysis(
+            getOperation(),
+            CircuitCutOptions{targetWidth, allowGateCuts, allowWireCuts, reusePolicy});
+
+        // Surface the analysis result as diagnostics so it can be checked with
+        // -verify-diagnostics.
+        if (!emitRemarks) { return; }
+        if (!analysis.isFeasible()) {
+            getOperation()->emitRemark("circuit cut infeasible");
+            return;
+        }
+        for (Operation* gate : analysis.gatesToCut()) { gate->emitRemark("gate cut"); }
+
+        for (const WireValues &wire : analysis.wiresToCut()) {
+            const SingleQubit &source = wire.front();
+            auto sourceResult = cast<OpResult>(source.multiQubit);
+            std::string message = "wire cut: output " + std::to_string(sourceResult.getResultNumber());
+            if (source.multiQubitIndex != 0) { message += "#" + std::to_string(source.multiQubitIndex); }
+            emitRemark(source.multiQubit.getLoc(), message);
+        }
+    }
 };
 
 std::unique_ptr<Pass> mlir::quantum::createCircuitCutAnalysisPass()
@@ -993,12 +1015,11 @@ std::pair<std::set<Operation*>, std::set<WireValues, WireValuesLess>> collectCut
     return {std::move(gateCuts), std::move(wireCuts)};
 }
 
-CircuitCutAnalysis::CircuitCutAnalysis(Operation* op, AnalysisManager &am)
+CircuitCutAnalysis::CircuitCutAnalysis(Operation* op, const CircuitCutOptions &options)
 {
     func::FuncOp root = dyn_cast<func::FuncOp>(op);
     assert(root && "CircuitCutAnalysis requires a FunctionOpInterface op");
     auto [circuitGraph, annotations] = buildCircuitGraph(root);
-    auto options = CircuitCutOptions{3, true, true, QubitLineReuse}; // hard code the options for now
     auto cutSolution = solveCircuitCut(circuitGraph, options);
     if ((feasible = cutSolution.feasible)) {
         std::tie(gateCuts, wireCuts) = collectCuts(circuitGraph, annotations, cutSolution);

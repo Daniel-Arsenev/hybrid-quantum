@@ -7,6 +7,7 @@
 
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
+#include "quantum-mlir/Dialect/Quantum/Analysis/CircuitCutAnalysis.h"
 
 #include <memory>
 #include <mlir/Transforms/OneToNTypeConversion.h>
