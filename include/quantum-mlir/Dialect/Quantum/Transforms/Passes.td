@@ -57,6 +57,13 @@ def CircuitCutAnalysis : Pass<"circuit-cut-analysis", "func::FuncOp"> {
               clEnumValN(mlir::quantum::NoReuse, "none", "No qubit reuse"),
               clEnumValN(mlir::quantum::QubitLineReuse, "line", "Reuse along whole qubit lines"),
               clEnumValN(mlir::quantum::ComplexReuse, "complex", "Reachability-based qubit reuse"))}]>,
+    Option<"cutWeight", "cut-weight", "int64_t", /*default=*/"1",
+           "Weight on the post-processing (cut count) objective. Scales the cost "
+           "of each wire and gate cut, trading off against the fidelity weight">,
+    Option<"fidelityWeight", "fidelity-weight", "int64_t", /*default=*/"0",
+           "Weight on the fidelity objective. Penalises the largest number of "
+           "two-qubit gates in any subcircuit, encouraging balancing them across "
+           "subcircuits. Zero is cuts-only">,
     Option<"emitRemarks", "emit-remarks", "bool", /*default=*/"false",
            "Emit the computed gate/wire cut set as diagnostic remarks "
            "(intended for testing with -verify-diagnostics)">,

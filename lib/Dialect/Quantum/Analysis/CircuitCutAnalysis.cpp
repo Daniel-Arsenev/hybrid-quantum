@@ -150,20 +150,36 @@ std::pair<TraceResult, std::vector<SingleQubit>> traceThroughOps(SingleQubit ref
 
         OpOperand &use = *uses.begin();
         Operation* destination = use.getOwner();
-        uint64_t operandNum = use.getOperandNumber();
+        uint64_t landedOperandNumber = use.getOperandNumber();
 
         // for n-qubit gate we return here
-        // for single-qubit gate we record it and continue through its qubit result
+        // for single-qubit gate we record it and continue through its qubit result.
+        // gates may take non-qubit operands, we have to consider that.
         if (isa<GateOpInterface>(destination)) {
-            if (destination->getNumOperands() > 1) {
+            uint64_t qubitOperandCount = 0;
+            uint64_t qubitOperandIndex = 0;
+            for (auto [operandIndex, operand] : llvm::enumerate(destination->getOperands())) {
+                if (!isa<QubitType>(operand.getType())) { continue; }
+                if (operandIndex < landedOperandNumber) { ++qubitOperandIndex; }
+                ++qubitOperandCount;
+            }
+            if (qubitOperandCount > 1) {
                 return {
-                    ReachedGate{destination, operandNum, ref.multiQubitIndex},
+                    ReachedGate{destination, qubitOperandIndex, ref.multiQubitIndex},
                     std::move(passthrough)
                 };
             } else {
-                auto results = destination->getResults();
-                if (results.empty()) { return {ReachedUnknown{}, std::move(passthrough)}; }
-                ref = {results.front(), ref.multiQubitIndex};
+                // a single-qubit gate has exactly one qubit result (possibly
+                // parametrised by non-qubit operands); follow that qubit result.
+                Value qubitResult;
+                for (Value result : destination->getResults()) {
+                    if (isa<QubitType>(result.getType())) {
+                        qubitResult = result;
+                        break;
+                    }
+                }
+                if (!qubitResult) { return {ReachedUnknown{}, std::move(passthrough)}; }
+                ref = {qubitResult, ref.multiQubitIndex};
             }
         }
 
@@ -187,7 +203,7 @@ std::pair<TraceResult, std::vector<SingleQubit>> traceThroughOps(SingleQubit ref
         // accordingly
         else if (isa<MergeOp>(destination)) {
             uint64_t multiQubitIndex = ref.multiQubitIndex;
-            for (uint64_t i = 0; i < operandNum; ++i) {
+            for (uint64_t i = 0; i < landedOperandNumber; ++i) {
                 auto quantumType = dyn_cast<QubitType>(destination->getOperand(i).getType());
                 multiQubitIndex += static_cast<uint64_t>(quantumType.getSize());
             }
@@ -231,7 +247,7 @@ std::pair<CircuitGraph, CircuitGraphAnnotations> buildCircuitGraph(func::FuncOp 
         lookup.insert_or_assign(&op, newMultiGateIndex);
         MultiGate &multiGate = graph.multiGates.emplace_back();
 
-        QubitType quantumType = dyn_cast<QubitType>(op.getOperand(0).getType());
+        QubitType quantumType = dyn_cast<QubitType>(op.getResult(0).getType());
         uint64_t multiGateWidth = quantumType.getSize();
         for (uint64_t multiQubitIndex = 0; multiQubitIndex < multiGateWidth; ++multiQubitIndex) {
             GateIndex gateIndex = graph.gates.size();
@@ -242,11 +258,14 @@ std::pair<CircuitGraph, CircuitGraphAnnotations> buildCircuitGraph(func::FuncOp 
             graph.gateToMultiGate.push_back(newMultiGateIndex);
             annotations.gateOps.push_back(&op);
 
-            for (auto [operandIndex, operand] : llvm::enumerate(op.getOperands())) {
+            uint64_t qubitIndex = 0;
+            for (Value operand : op.getOperands()) {
+                if (!isa<QubitType>(operand.getType())) { continue; }
                 SubGateIndex subGateIndex = graph.subGates.size();
                 gate.subGates.push_back(subGateIndex);
                 graph.subGateToGate.push_back(gateIndex);
-                graph.subGates.emplace_back(operandIndex, multiQubitIndex);
+                graph.subGates.emplace_back(qubitIndex, multiQubitIndex);
+                ++qubitIndex;
             }
         }
     }
@@ -673,15 +692,43 @@ CutSolution solveCircuitCut(const CircuitGraph &graph, CircuitCutOptions options
         }
     }
 
+    // maxTwoQubitGates tracks the largest number of two-qubit gates in any one
+    // subcircuit.
+    IntVar maxTwoQubitGates = cp.NewIntVar(operations_research::Domain(0, static_cast<int64_t>(gateCount)));
+    if (options.fidelityWeight != 0) {
+        for (SubCircuitIndex subCircuitIndex = 0; subCircuitIndex < maxSubcircuitCount; ++subCircuitIndex) {
+            LinearExpr twoQubitGatesHere;
+            for (GateIndex gateIndex = 0; gateIndex < gateCount; ++gateIndex) {
+                const Gate &gate = graph.gates[gateIndex];
+                if (gate.subGates.size() <= 1) { continue; }
+                // the gate is intact and in this subcircuit iff it is not gate-cut
+                // and its first subgate is coloured with this subcircuit.
+                BoolVar gateHere = cp.NewBoolVar();
+                cp.AddBoolAnd({gateCut[gateIndex].Not(), subGateSubcircuits[gate.subGates[0]][subCircuitIndex]})
+                    .OnlyEnforceIf(gateHere);
+                cp.AddBoolOr({gateCut[gateIndex], subGateSubcircuits[gate.subGates[0]][subCircuitIndex].Not()})
+                    .OnlyEnforceIf(gateHere.Not());
+                twoQubitGatesHere += gateHere;
+            }
+            cp.AddLessOrEqual(twoQubitGatesHere, maxTwoQubitGates);
+        }
+    }
+
     // objective is to minimise wireCuts*ln(4) + gateCuts*ln(6), scaled by 10
     // ln(4) is about 14 and ln(6) is about 18, plus a configurable cost per
-    // subcircuit used to discourage fragmenting the circuit.
+    // subcircuit used to discourage fragmenting the circuit. The fidelity term
+    // adds a configurable penalty on the worst subcircuit's two-qubit gate count.
     LinearExpr objective;
-    for (const auto &wireCutVariable : wireCut) { objective += LinearExpr::Term(wireCutVariable, 14); }
-    for (const auto &gateCutVariable : gateCut) { objective += LinearExpr::Term(gateCutVariable, 18); }
+    for (const auto &wireCutVariable : wireCut) {
+        objective += LinearExpr::Term(wireCutVariable, options.cutWeight * 14);
+    }
+    for (const auto &gateCutVariable : gateCut) {
+        objective += LinearExpr::Term(gateCutVariable, options.cutWeight * 18);
+    }
     for (const auto &subcircuitUsedVariable : subcircuitUsed) {
         objective += LinearExpr::Term(subcircuitUsedVariable, 1);
     }
+    if (options.fidelityWeight != 0) { objective += LinearExpr::Term(maxTwoQubitGates, options.fidelityWeight); }
     cp.Minimize(objective);
 
     // solve. pin the solver to a single worker with a fixed seed so the
@@ -955,7 +1002,7 @@ struct CircuitCutAnalysisPass : mlir::quantum::impl::CircuitCutAnalysisBase<Circ
     {
         auto analysis = CircuitCutAnalysis(
             getOperation(),
-            CircuitCutOptions{targetWidth, allowGateCuts, allowWireCuts, reusePolicy});
+            CircuitCutOptions{targetWidth, allowGateCuts, allowWireCuts, reusePolicy, cutWeight, fidelityWeight});
 
         // Surface the analysis result as diagnostics so it can be checked with
         // -verify-diagnostics.

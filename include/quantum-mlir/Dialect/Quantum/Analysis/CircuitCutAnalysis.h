@@ -29,6 +29,8 @@ struct CircuitCutOptions {
     bool allowGateCuts;
     bool allowWireCuts;
     QubitReusePolicy reusePolicy;
+    int64_t cutWeight;
+    int64_t fidelityWeight;
 };
 
 /// A single qubit, represented as a multi-qubit MLIR value together with the
@@ -62,8 +64,7 @@ struct WireValuesLess {
 };
 
 // For simplicity we consider only gate cutting of primitive n qubit gates
-// (with the exception of gates that take non qubit arguments). The algorithm
-// can be expanded to handle non primitive gates (for example by inlining).
+// The algorithm can be expanded to handle non primitive gates (for example by inlining).
 // Also we do not consider control flow yet.
 
 class CircuitCutAnalysis {
