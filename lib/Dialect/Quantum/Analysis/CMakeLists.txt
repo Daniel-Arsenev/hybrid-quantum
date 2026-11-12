@@ -1,6 +1,8 @@
 add_mlir_library(QuantumAnalysis
     CircuitCutAnalysis.cpp
     RegisterRangesAnalysis.cpp
+    PhasePolynomialAnalysis.cpp
+    LinearUseAnalysis.cpp
 
     ENABLE_AGGREGATION
     DEPENDS

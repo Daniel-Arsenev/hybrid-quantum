@@ -1,6 +1,8 @@
 add_mlir_dialect_library(QuantumTransforms
         Hermitian.cpp
         GateOptimization.cpp
+        PhasePolynomialMerge.cpp
+        VerifyLinearity.cpp
 
     ENABLE_AGGREGATION
 
@@ -11,4 +13,6 @@ add_mlir_dialect_library(QuantumTransforms
         MLIRPass
         MLIRTransforms
         MLIRTransformUtils
+        QuantumAnalysis
+        QuantumInterfaces
 )

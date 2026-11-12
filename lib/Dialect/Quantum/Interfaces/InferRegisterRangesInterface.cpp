@@ -38,15 +38,11 @@ bool ConstantRegisterRanges::operator==(
 const Value ConstantRegisterRanges::getRegisterValue() const { return value; }
 
 const ConstantIntRanges ConstantRegisterRanges::getRanges() const
-{
-    return ranges;
-}
+{ return ranges; }
 
 raw_ostream &
 mlir::quantum::operator<<(raw_ostream &os, const ConstantRegisterRanges &range)
-{
-    return os << range.getRegisterValue() << " -> " << range.getRanges();
-}
+{ return os << range.getRegisterValue() << " -> " << range.getRanges(); }
 
 raw_ostream &
 mlir::quantum::operator<<(raw_ostream &os, const RegisterRanges &range)
@@ -113,6 +109,7 @@ RegisterRanges RegisterRanges::drop_front(size_t N) const
             // 2.1. Is diff = max - min? Then we start assembling from the next
             // range
             if (diff == (max - min)) {
+                ++i;
                 break;
             } else {
                 // 2.2. Is diff < max - min? Then we need to store
@@ -122,6 +119,7 @@ RegisterRanges RegisterRanges::drop_front(size_t N) const
                     current.getRegisterValue(),
                     {restMin, max, restMin, max});
                 values.push_back(rest);
+                ++i;
                 break;
             }
         }

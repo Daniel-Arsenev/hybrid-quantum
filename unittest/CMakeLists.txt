@@ -4,31 +4,26 @@
 # The quantum-mlir unit test project.
 ################################################################################
 
-project(quantum-mlir-tests)
-
-find_package(doctest REQUIRED)
+find_package(doctest REQUIRED CONFIG)
 include(doctest)
 
-include(CTest)
-
-add_executable(${PROJECT_NAME}
-    main.cpp
+add_executable(quantum-mlir-tests
+  QuantumOpsTest.cpp
+  RegisterRangesTest.cpp
+  main.cpp
 )
-if(APPLE)
-    target_include_directories(${PROJECT_NAME}
-        PRIVATE
-            /opt/homebrew/include        
-    )
+
+target_link_libraries(quantum-mlir-tests
+  PRIVATE
+    doctest::doctest
+    MLIRIR
+    MLIRSupport
+    QuantumIR
+)
+
+doctest_discover_tests(quantum-mlir-tests)
+
+if(FRONTEND_QASM)
+  target_sources(quantum-mlir-tests PRIVATE QASMScopeTest.cpp)
+  target_link_libraries(quantum-mlir-tests PRIVATE QuantumQASMCommon MLIRArithDialect)
 endif()
-target_link_libraries(${PROJECT_NAME}
-    PRIVATE
-        MLIRIR
-        MLIRSupport
-        QuantumIR
-)
-target_compile_options(${PROJECT_NAME}
-    PRIVATE
-        -fno-rtti
-)
-
-doctest_discover_tests(${PROJECT_NAME})

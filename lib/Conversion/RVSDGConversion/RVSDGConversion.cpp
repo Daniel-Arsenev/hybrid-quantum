@@ -49,7 +49,8 @@ struct ConvertRVSDGGamma : public OpConversionPattern<rvsdg::GammaNode> {
                 convertedResultTypes)))
             return failure();
 
-        auto newGamma = rewriter.create<rvsdg::GammaNode>(
+        auto newGamma = rvsdg::GammaNode::create(
+            rewriter,
             op->getLoc(),
             convertedResultTypes,
             adaptor.getPredicate(),
@@ -117,6 +118,4 @@ void mlir::rvsdg::populateConvertRVSDGPatterns(
 }
 
 std::unique_ptr<Pass> mlir::createConvertRVSDGPass()
-{
-    return std::make_unique<ConvertRVSDGPass>();
-}
+{ return std::make_unique<ConvertRVSDGPass>(); }

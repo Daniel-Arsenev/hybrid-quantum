@@ -55,21 +55,15 @@ struct QPUInlinerInterface : public DialectInlinerInterface {
         Operation* call,
         Operation* callable,
         bool wouldBeCloned) const final
-    {
-        return true;
-    }
+    { return true; }
 
     /// All operations can be inlined.
     bool isLegalToInline(Operation*, Region*, bool, IRMapping &) const final
-    {
-        return true;
-    }
+    { return true; }
 
     /// All gate bodies can be inlined.
     bool isLegalToInline(Region*, Region*, bool, IRMapping &) const final
-    {
-        return true;
-    }
+    { return true; }
 
     //===--------------------------------------------------------------------===//
     // Transformation Hooks
@@ -86,19 +80,24 @@ struct QPUInlinerInterface : public DialectInlinerInterface {
 } // namespace
 
 //===----------------------------------------------------------------------===//
-// ExecuteOp
+// ExecuteOp Parser / Printer
 //===----------------------------------------------------------------------===//
 
-static ParseResult parseExecuteOperands(
+static ParseResult parseExecuteOperandList(
     OpAsmParser &parser,
     SmallVectorImpl<OpAsmParser::UnresolvedOperand> &operandNames,
     SmallVectorImpl<Type> &operandTypes)
 {
-    if (parser.parseOptionalKeyword("args")) return success();
     auto parseElement = [&]() -> ParseResult {
-        return failure(
-            parser.parseOperand(operandNames.emplace_back())
-            || parser.parseColonType(operandTypes.emplace_back()));
+        OpAsmParser::UnresolvedOperand operand;
+        Type type;
+
+        if (parser.parseOperand(operand) || parser.parseColonType(type))
+            return failure();
+
+        operandNames.push_back(operand);
+        operandTypes.push_back(type);
+        return success();
     };
 
     return parser.parseCommaSeparatedList(
@@ -107,50 +106,13 @@ static ParseResult parseExecuteOperands(
         "in argument list");
 }
 
-static void printExecuteOperands(
+static void printExecuteOperandList(
     OpAsmPrinter &printer,
     Operation*,
     OperandRange operands,
     TypeRange types)
 {
-    if (operands.empty()) return;
-    printer << "args(";
-    llvm::interleaveComma(
-        llvm::zip_equal(operands, types),
-        printer,
-        [&](const auto &pair) {
-            auto [operand, type] = pair;
-            printer << operand << " : " << type;
-        });
-    printer << ")";
-}
-
-static ParseResult parseExecuteResults(
-    OpAsmParser &parser,
-    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &operandNames,
-    SmallVectorImpl<Type> &operandTypes)
-{
-    if (parser.parseOptionalKeyword("outs")) return success();
-    auto parseElement = [&]() -> ParseResult {
-        return failure(
-            parser.parseOperand(operandNames.emplace_back())
-            || parser.parseColonType(operandTypes.emplace_back()));
-    };
-
-    return parser.parseCommaSeparatedList(
-        OpAsmParser::Delimiter::Paren,
-        parseElement,
-        "in outs list");
-}
-
-static void printExecuteResults(
-    OpAsmPrinter &printer,
-    Operation*,
-    OperandRange operands,
-    TypeRange types)
-{
-    if (operands.empty()) return;
-    printer << "outs(";
+    printer << "(";
     llvm::interleaveComma(
         llvm::zip_equal(operands, types),
         printer,
@@ -203,13 +165,62 @@ void CircuitOp::build(
     if (argAttrs.empty()) return;
     assert(type.getNumInputs() == argAttrs.size());
     // call_interface_impl
-    function_interface_impl::addArgAndResultAttrs(
+    call_interface_impl::addArgAndResultAttrs(
         builder,
         state,
         argAttrs,
-        /*resultAttrs=*/std::nullopt,
+        /*resultAttrs=*/{},
         getArgAttrsAttrName(state.name),
         getResAttrsAttrName(state.name));
+}
+
+//===----------------------------------------------------------------------===//
+// BitsEqOp
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult BitsEqOp::verify()
+{
+    auto bitsType = mlir::cast<mlir::ShapedType>(getBits().getType());
+    auto cmpType = mlir::cast<mlir::IntegerType>(getCmp().getType());
+
+    if (bitsType.isDynamicDim(0))
+        return emitOpError("requires a statically sized bit sequence");
+
+    if (bitsType.getDimSize(0) != cmpType.getWidth())
+        return emitOpError(
+            "requires the bit sequence length to equal "
+            "the comparison integer bit width");
+
+    return mlir::success();
+}
+
+void BitsEqOp::getEffects(
+    llvm::SmallVectorImpl<mlir::MemoryEffects::EffectInstance> &effects)
+{
+    if (llvm::isa<mlir::MemRefType>(getBits().getType()))
+        effects.emplace_back(
+            mlir::MemoryEffects::Read::get(),
+            &getBitsMutable());
+}
+
+//===----------------------------------------------------------------------===//
+// ToBitsOp
+//===----------------------------------------------------------------------===//
+
+void ToBitsOp::getEffects(
+    llvm::SmallVectorImpl<mlir::MemoryEffects::EffectInstance> &effects)
+{
+    auto source = llvm::cast<MeasurementSourceInterface>(getSrc().getType());
+    if (source.isMutable())
+        effects.emplace_back(
+            mlir::MemoryEffects::Read::get(),
+            &getSrcMutable());
+
+    auto dst = mlir::cast<mlir::OpResult>(getDst());
+    if (!llvm::isa<mlir::MemRefType>(dst.getType())) return;
+
+    effects.emplace_back(mlir::MemoryEffects::Allocate::get(), dst);
+    effects.emplace_back(mlir::MemoryEffects::Write::get(), dst);
 }
 
 //===----------------------------------------------------------------------===//

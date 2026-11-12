@@ -10,7 +10,8 @@
 #include "quantum-mlir/Dialect/Quantum/Analysis/CircuitCutAnalysis.h"
 
 #include <memory>
-#include <mlir/Transforms/OneToNTypeConversion.h>
+#include <mlir/Analysis/DataFlowFramework.h>
+#include <mlir/Transforms/DialectConversion.h>
 
 namespace mlir {
 
@@ -36,6 +37,10 @@ std::unique_ptr<Pass> createQuantumOptimisePass();
 std::unique_ptr<Pass> createHermitianCancelPass();
 
 std::unique_ptr<Pass> createScfToRVSDGPass();
+
+std::unique_ptr<Pass> createPhasePolynomialMergePass();
+
+std::unique_ptr<Pass> createVerifyLinearityPass();
 
 std::unique_ptr<Pass> createCircuitCutAnalysisPass();
 

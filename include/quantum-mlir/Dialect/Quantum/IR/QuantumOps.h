@@ -23,6 +23,7 @@
 #include "quantum-mlir/Dialect/Quantum/IR/QuantumBase.h"
 #include "quantum-mlir/Dialect/Quantum/IR/QuantumTypes.h"
 #include "quantum-mlir/Dialect/Quantum/Interfaces/GateOpInterface.h"
+#include "quantum-mlir/Dialect/Quantum/Interfaces/InferPhasePolynomialInterface.h"
 #include "quantum-mlir/Dialect/Quantum/Interfaces/InferRegisterRangesInterface.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -35,10 +36,7 @@ namespace quantum {
 void buildTerminatedBody(OpBuilder &builder, Location loc, Value condition, ValueRange capturedArgs);
 
 template<typename ConcreteType>
-class NoClone : public OpTrait::TraitBase<ConcreteType, NoClone> {
-public:
-    static LogicalResult verifyTrait(Operation* op);
-};
+class NoClone : public OpTrait::TraitBase<ConcreteType, NoClone> {};
 
 template<typename ConcreteType>
 class Hermitian : public OpTrait::TraitBase<ConcreteType, Hermitian> {

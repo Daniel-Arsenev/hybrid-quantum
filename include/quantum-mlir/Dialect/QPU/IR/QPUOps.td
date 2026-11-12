@@ -17,6 +17,7 @@ include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/FunctionInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/Interfaces/DestinationStyleOpInterface.td"
 
 //===----------------------------------------------------------------------===//
 // QPU Op templates
@@ -100,7 +101,12 @@ def QPU_CircuitOp : QPU_Op<"circuit", [
 }
 
 def QPU_ExecuteOp : QPU_Op<"execute", [
-    AttrSizedOperandSegments
+    AttrSizedOperandSegments,
+    DestinationStyleOpInterface,
+    RangedTypesMatchWith<
+      "result types match output types",
+      "output", "result", "$_self"
+    >
   ]> {
   let summary = "Executed a quantum circuit.";
   let description = [{
@@ -109,14 +115,23 @@ def QPU_ExecuteOp : QPU_Op<"execute", [
   }];
   let arguments = (ins
     SymbolRefAttr:$circuit,
-    Variadic<AnyType>:$circuitOperands,
-    Variadic<AnyType>:$circuitResults
+    Variadic<AnyType>:$input,
+    Variadic<AnyTensor>:$output
   );
+  let results = (outs
+    Variadic<AnyTensor>:$result
+  );  
   let assemblyFormat = [{
     $circuit
-    custom<ExecuteOperands>($circuitOperands, type($circuitOperands))
-    custom<ExecuteResults>($circuitResults, type($circuitResults))
+    `ins` custom<ExecuteOperandList>($input, type($input))
+    `outs` custom<ExecuteOperandList>($output, type($output))
     attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    MutableOperandRange getDpsInitsMutable() {
+      return getOutputMutable();
+    }
   }];
 }
 
@@ -125,7 +140,7 @@ def QPU_ReturnOp : QPU_Op<"return", [
   HasParent<"CircuitOp">,
   ReturnLike,
   Terminator]> {
-  let summary = "Quantum gate return operation";
+  let summary = "Quantum circuit return operation";
   let description = [{
     The `qpu.return` operation represents a return operation within a
     circuit body.
@@ -138,10 +153,41 @@ def QPU_ReturnOp : QPU_Op<"return", [
   let arguments = (ins Variadic<AnyType>:$operands);
 
   let builders = [OpBuilder<(ins), [{
-    build($_builder, $_state, std::nullopt);
+    build($_builder, $_state, ::mlir::ValueRange{});
   }]>];
 
   //let hasVerifier = 1;
+}
+
+def QPU_ToBitsOp : QPU_Op<"to_bits", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let summary = "Read a measurement source as a bit sequence";
+  let description = [{
+    Materializes measurement bits from a source implementing
+    MeasurementSourceInterface. A tensor result is an immutable snapshot.
+    A memref result owns newly allocated storage initialized with those bits.
+    Reading a mutable source has a memory read effect on that source.
+  }];
+  let arguments = (ins QPU_MeasurementSource:$src);
+  let results = (outs QPU_BitSequence:$dst);
+}
+
+def QPU_BitsEqOp : QPU_Op<"bits_eq", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+  ]> {
+  let summary = "Compare a bit sequence with an unsigned integer";
+  let description = [{
+    Compares the unsigned value represented by bits with cmp.
+    Element i has weight 2^i. The sequence must have a static
+    length equal to the bit width of cmp.
+  }];
+  let arguments = (ins
+    QPU_BitSequence:$bits,
+    AnyInteger:$cmp
+  );
+  let results = (outs I1:$dst);
+  let hasVerifier = 1;
 }
 
 #endif // QPU_OPS

@@ -9,6 +9,7 @@
 
 include "quantum-mlir/Dialect/Quantum/IR/QuantumTypes.td"
 include "quantum-mlir/Dialect/Quantum/Interfaces/InferRegisterRangesInterface.td"
+include "quantum-mlir/Dialect/Quantum/Interfaces/InferPhasePolynomialInterface.td"
 include "quantum-mlir/Dialect/Quantum/Interfaces/GateOpInterface.td"
 include "mlir/Interfaces/CastInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
@@ -49,7 +50,7 @@ class Measurement_Op<string mnemonic, list<Trait> traits = []>
 // Inject no clone theorem verifier into operations
 // that produce qubits
 def NoClone : NativeOpTrait<"NoClone"> {
-    let cppNamespace = "::mlir::quantum";
+  let cppNamespace = "::mlir::quantum";
 }
 
 def Hermitian : NativeOpTrait<"Hermitian"> {
@@ -74,11 +75,13 @@ class AdjointTo<string op>
 // Quantum gate operations.
 //===----------------------------------------------------------------------===//
 
+// TODO: A gate is a unitary operation
 def Quantum_GateOp : Quantum_Op<
   "gate",
   [
     IsolatedFromAbove,
-    FunctionOpInterface
+    FunctionOpInterface,
+    NoClone
   ]> {
   let summary = "A quantum gate operation";
   let description = [{ A quantum gate operation. }];
@@ -128,7 +131,8 @@ def Quantum_GateCallOp : Gate_Op<
   "call",
   [
     CallOpInterface,
-    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+    NoClone
   ]> {
   let summary = "Gate call operation";
   let description = [{ Gate call operation. }];
@@ -198,7 +202,8 @@ def Quantum_ReturnOp : Quantum_Op<
     Pure,
     HasParent<"GateOp">,
     ReturnLike,
-    Terminator
+    Terminator,
+    NoClone
   ]> {
   let summary = "Quantum gate return operation";
   let description = [{
@@ -213,7 +218,7 @@ def Quantum_ReturnOp : Quantum_Op<
   let arguments = (ins Variadic<AnyType>:$operands);
 
   let builders = [OpBuilder<(ins), [{
-    build($_builder, $_state, std::nullopt);
+    build($_builder, $_state, ::mlir::ValueRange{});
   }]>];
 
   let hasVerifier = 1;
@@ -229,10 +234,13 @@ def Quantum_AllocOp : Memory_Op<
     MemoryEffects<[
       MemRead
     ]>,
-    NoClone,
     DeclareOpInterfaceMethods<
       InferRegisterRangesInterface, ["inferResultRanges"]
-    >
+    >,
+    DeclareOpInterfaceMethods<
+      InferPhasePolynomialInterface, ["inferResultPolynomial"]
+    >,
+    NoClone
   ]> {
   let summary = "Allocate n qubits into a quantum register.";
   let description = [{
@@ -244,6 +252,10 @@ def Quantum_AllocOp : Memory_Op<
     %q0 = quantum.alloc : !quantum.qubit<5>
     ```
   }];
+
+  let arguments = (ins
+    OptionalAttr<ConfinedAttr<I32Attr, [IntNonNegative]>>:$pos
+  );
 
   let results = (outs Quantum_QubitType:$result);
 }
@@ -257,7 +269,8 @@ def Quantum_DeallocateOp : Memory_Op<
     ]>,
     DeclareOpInterfaceMethods<
       InferRegisterRangesInterface, ["inferResultRanges"]
-    >
+    >,
+    NoClone
   ]> {
     let summary = "Deallocate a quantum register.";
     let description = [{
@@ -284,7 +297,9 @@ def Quantum_ResetOp : Memory_Op<
       MemRead,
       MemWrite
     ]>,
-    InferRegisterRangesInterface
+    InferRegisterRangesInterface,
+    InferPhasePolynomialInterface,
+    NoClone
   ]> {
     let summary = "Reset a quantum register.";
     let description = [{
@@ -314,10 +329,13 @@ def Quantum_SplitOp : Memory_Op<
       MemRead,
       MemWrite
     ]>,
-    NoClone,
     DeclareOpInterfaceMethods<
       InferRegisterRangesInterface, ["inferResultRanges"]
-    >
+    >,
+    DeclareOpInterfaceMethods<
+      InferPhasePolynomialInterface, ["inferResultPolynomial"]
+    >,
+    NoClone
   ]> {
     let summary = "Split a qubit register into two sub-registers.";
     let description = [{
@@ -343,10 +361,10 @@ def Quantum_MergeOp : Memory_Op<
       MemRead,
       MemWrite
     ]>,
-    NoClone,
     DeclareOpInterfaceMethods<
       InferRegisterRangesInterface, ["inferResultRanges"]
-    >
+    >,
+    NoClone
   ]> {
     let summary = "Combine qubit registers into a single one.";
     let description = [{
@@ -384,7 +402,8 @@ def Quantum_IdOp : PrimitiveGate_Op<
   [
     Hermitian,
     AllTypesMatch<["input", "result"]>,
-    InferRegisterRangesInterface
+    InferRegisterRangesInterface,
+    InferPhasePolynomialInterface
   ]> {
   let summary = "Identity gate operation";
   let description = [{
@@ -402,7 +421,10 @@ def Quantum_HOp : PrimitiveGate_Op<
     Hermitian,
     NoMemoryEffect,
     AllTypesMatch<["input", "result"]>,
-    InferRegisterRangesInterface
+    InferRegisterRangesInterface,
+    DeclareOpInterfaceMethods<
+      InferPhasePolynomialInterface, ["inferResultPolynomial"]
+    >
   ]> {
   let summary = "Hadamard gate operation";
   let description = [{
@@ -420,7 +442,8 @@ def Quantum_XOp : PrimitiveGate_Op<
     Hermitian,
     NoMemoryEffect,
     AllTypesMatch<["input", "result"]>,
-    InferRegisterRangesInterface
+    InferRegisterRangesInterface,
+    InferPhasePolynomialInterface
   ]>{
   let summary = "X gate operation (NOT gate)";
   let description = [{%out = "quantum.X"(%qubit) : !quantum.qubit<1> -> !quantum.qubit<1>}]; 
@@ -555,7 +578,10 @@ def Quantum_CNOTOp : PrimitiveGate_Op<
     Hermitian,
     NoMemoryEffect,
     AllTypesMatch<["input", "target", "control_out", "target_out"]>,
-    InferRegisterRangesInterface
+    InferRegisterRangesInterface,
+    DeclareOpInterfaceMethods<
+      InferPhasePolynomialInterface, ["inferResultPolynomial"]
+    >
   ]> {
   let summary = "CNOT gate operation";
   let description = [{
@@ -597,7 +623,10 @@ def Quantum_SWAPOp : PrimitiveGate_Op<
   [
     Hermitian,
     AllTypesMatch<[ "lhs", "rhs","result_lhs", "result_rhs"]>,
-    InferRegisterRangesInterface
+    InferRegisterRangesInterface,
+    DeclareOpInterfaceMethods<
+      InferPhasePolynomialInterface, ["inferResultPolynomial"]
+    >
   ]> {
   let summary = "SWAP gate";
   let description = [{
@@ -619,6 +648,7 @@ def Quantum_SWAPOp : PrimitiveGate_Op<
 def Quantum_RxOp : PrimitiveGate_Op<
   "Rx",
   [
+    Unitary,
     NoMemoryEffect,
     AllTypesMatch<["input", "result"]>,
     InferRegisterRangesInterface
@@ -641,6 +671,7 @@ def Quantum_RxOp : PrimitiveGate_Op<
 def Quantum_RyOp : PrimitiveGate_Op<
   "Ry",
   [
+    Unitary,
     NoMemoryEffect,
     AllTypesMatch<["input", "result"]>,
     InferRegisterRangesInterface
@@ -663,9 +694,11 @@ def Quantum_RyOp : PrimitiveGate_Op<
 def Quantum_RzOp : PrimitiveGate_Op<
   "Rz",
   [
+    Unitary,
     NoMemoryEffect,
     AllTypesMatch<["input", "result"]>,
-    InferRegisterRangesInterface
+    InferRegisterRangesInterface,
+    InferPhasePolynomialInterface
   ]> {
   let summary = "z rotation gate operation";
   let description = [{
@@ -685,6 +718,7 @@ def Quantum_RzOp : PrimitiveGate_Op<
 def Quantum_PhaseOp : PrimitiveGate_Op<
   "P",
   [
+    Hermitian,
     NoMemoryEffect,
     AllTypesMatch<["input", "result"]>,
     InferRegisterRangesInterface
@@ -704,6 +738,7 @@ def Quantum_PhaseOp : PrimitiveGate_Op<
 def Quantum_U3Op : PrimitiveGate_Op<
   "U3",
   [
+    Unitary,
     NoMemoryEffect,
     AllTypesMatch<["input", "result"]>,
     InferRegisterRangesInterface
@@ -720,6 +755,7 @@ def Quantum_U3Op : PrimitiveGate_Op<
 def Quantum_U2Op : PrimitiveGate_Op<
   "U2",
   [
+    Unitary,
     NoMemoryEffect,
     AllTypesMatch<["input", "result"]>,
     InferRegisterRangesInterface
@@ -736,6 +772,7 @@ def Quantum_U2Op : PrimitiveGate_Op<
 def Quantum_U1Op : PrimitiveGate_Op<
   "U1",
   [
+    Unitary,
     NoMemoryEffect,
     AllTypesMatch<["input", "result"]>,
     InferRegisterRangesInterface
@@ -755,6 +792,7 @@ def Quantum_U1Op : PrimitiveGate_Op<
 def Quantum_CRzOp : PrimitiveGate_Op<
   "CRz",
   [
+    Unitary,
     NoMemoryEffect,
     AllTypesMatch<["control", "target", "control_out", "target_out"]>,
     InferRegisterRangesInterface
@@ -772,6 +810,7 @@ def Quantum_CRzOp : PrimitiveGate_Op<
 def Quantum_CRyOp : PrimitiveGate_Op<
   "CRy",
   [
+    Unitary,
     NoMemoryEffect,
     AllTypesMatch<["control", "target", "control_out", "target_out"]>,
     InferRegisterRangesInterface
@@ -789,6 +828,7 @@ def Quantum_CRyOp : PrimitiveGate_Op<
 def Quantum_CU1Op : PrimitiveGate_Op<
   "CU1",
   [
+    Unitary,
     NoMemoryEffect,
     AllTypesMatch<["control", "target", "control_out", "target_out"]>,
     InferRegisterRangesInterface
@@ -849,7 +889,10 @@ def Quantum_BarrierOp : PrimitiveGate_Op<
   "barrier",
   [
     AllTypesMatch<["input", "result"]>,
-    InferRegisterRangesInterface
+    InferRegisterRangesInterface,
+    DeclareOpInterfaceMethods<
+      InferPhasePolynomialInterface, ["inferResultPolynomial"]
+    >
   ]> {
   let summary = "Barrier operation";
   let description = [{
@@ -861,6 +904,64 @@ def Quantum_BarrierOp : PrimitiveGate_Op<
 }
 
 //===----------------------------------------------------------------------===//
+// Controlled region ops.
+//===----------------------------------------------------------------------===//
+
+def Quantum_CtrlOp : PrimitiveGate_Op<
+  "ctrl",
+  [
+    Unitary,
+    SingleBlock,
+    AllTypesMatch<["input", "result"]>
+  ]> {
+  let summary = "Controlled unitary region";
+  let description = [{
+    The first `nctrls` input operands are single-qubit controls. The remaining
+    operands are targets and are passed to the region as block arguments.
+    `nctrls` defaults to one. Results have the same types and order as inputs:
+    forwarded controls followed by the updated targets from `quantum.yield`.
+    The region may capture classical values, but must access qubits through its
+    block arguments. It must contain exactly one block ending in `quantum.yield`.
+  }];
+
+  let arguments = (ins
+    Variadic<Quantum_QubitType>:$input,
+    DefaultValuedAttr<IndexAttr, "1">:$nctrls
+  );
+  let results = (outs Variadic<Quantum_QubitType>:$result);
+  let regions = (region AnyRegion:$body);
+  let builders = [
+    OpBuilder<(ins "ValueRange":$controls, "ValueRange":$targets)>
+  ];
+  let extraClassDeclaration = [{
+    ::mlir::Block &getBodyBlock() {
+      return getBody().front();
+    }
+  }];
+  let hasVerifier = 1;
+  let hasRegionVerifier = 1;
+}
+
+def Quantum_YieldOp : Quantum_Op<
+  "yield",
+  [
+    Pure,
+    HasParent<"CtrlOp">,
+    ReturnLike,
+    Terminator,
+    NoClone
+  ]> {
+  let summary = "Yield updated targets from a controlled region";
+  let description = [{
+    Terminates a `quantum.ctrl` body. Operands must match the target result
+    types, excluding the leading control results. Controls are forwarded by
+    the enclosing operation and must not be yielded by the body.
+  }];
+  let arguments = (ins Variadic<Quantum_QubitType>:$args);
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // Measurement related gate operations.
 //===----------------------------------------------------------------------===//
 
@@ -869,10 +970,10 @@ def Quantum_MeasureOp : Memory_Op<
   [
     MemoryEffects<[MemRead]>,
     AllTypesMatch<["input", "result"]>,
-    NoClone,
     DeclareOpInterfaceMethods<
       InferRegisterRangesInterface, ["inferResultRanges"]
-    >
+    >,
+    NoClone
   ]> {
     let summary = "Measure a qubit register of size N.";
     let description = [{
@@ -885,11 +986,6 @@ def Quantum_MeasureOp : Memory_Op<
       Quantum_MeasurementType:$measurement,
       Quantum_QubitType:$result
     );
-}
-
-def Quantum_ToTensorOp : Quantum_Op<"to_tensor"> {
-  let arguments = (ins Quantum_MeasurementType:$src);
-  let results = (outs 1DTensorOf<[I1]>:$dst);
 }
 
 #endif // QUANTUM_OPS

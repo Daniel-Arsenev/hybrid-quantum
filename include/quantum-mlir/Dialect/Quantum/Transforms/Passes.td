@@ -27,6 +27,24 @@ def HermitianCancel : Pass<"hermitian-cancel", "ModuleOp"> {
   let constructor = "mlir::quantum::createHermitianCancelPass()";
 }
 
+def PhasePolynomialMerge : Pass<"phase-poly-merge", "ModuleOp"> {
+  let summary = "Rotation gate merging based on phase polynomial analysis.";
+  
+  let description = [{
+  }];
+
+  let constructor = "mlir::quantum::createPhasePolynomialMergePass()";
+}
+
+def VerifyLinearity : Pass<"verify-linearity", "ModuleOp"> {
+  let summary = "Check linearity of qubit-consuming operations.";
+
+  let description = [{
+  }];
+
+  let constructor = "mlir::quantum::createVerifyLinearityPass()";
+}
+
 def CircuitCutAnalysis : Pass<"circuit-cut-analysis", "func::FuncOp"> {
   let summary = "Circuit cut analysis on the `quantum` dialect";
 

@@ -1,3 +1,6 @@
 add_subdirectory(quantum-opt)
 add_subdirectory(quantum-translate)
 add_subdirectory(quantum-lsp-server)
+if(FRONTEND_QASM)
+    add_subdirectory(quantum-qasm)
+endif()

@@ -7,11 +7,14 @@
 
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Transforms/InliningUtils.h"
+#include "quantum-mlir/Dialect/QPU/IR/QPUAttributes.h"
+#include "quantum-mlir/Dialect/QPU/IR/QPUOps.h"
 #include "quantum-mlir/Dialect/Quantum/IR/QuantumAttributes.h"
 #include "quantum-mlir/Dialect/Quantum/IR/QuantumTypes.h"
+#include "quantum-mlir/Dialect/Quantum/Interfaces/InferPhasePolynomialInterface.h"
 #include "quantum-mlir/Dialect/Quantum/Interfaces/InferRegisterRangesInterface.h"
 
-#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <iterator>
 #include <llvm/ADT/APInt.h>
@@ -31,6 +34,7 @@
 #include <mlir/IR/Diagnostics.h>
 #include <mlir/IR/Matchers.h>
 #include <mlir/IR/OpDefinition.h>
+#include <mlir/IR/Operation.h>
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/Region.h>
 #include <mlir/IR/Value.h>
@@ -38,6 +42,7 @@
 #include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>
 #include <optional>
+#include <vector>
 
 #define DEBUG_TYPE "quantum-ops"
 
@@ -66,21 +71,15 @@ struct QuantumInlinerInterface : public DialectInlinerInterface {
 
     /// Call operations can always be inlined
     bool isLegalToInline(Operation*, Operation*, bool) const final
-    {
-        return true;
-    }
+    { return true; }
 
     /// All operations can be inlined.
     bool isLegalToInline(Operation*, Region*, bool, IRMapping &) const final
-    {
-        return true;
-    }
+    { return true; }
 
     /// All gate bodies can be inlined.
     bool isLegalToInline(Region*, Region*, bool, IRMapping &) const final
-    {
-        return true;
-    }
+    { return true; }
 
     //===--------------------------------------------------------------------===//
     // Transformation Hooks
@@ -112,7 +111,7 @@ struct QuantumInlinerInterface : public DialectInlinerInterface {
 } // namespace
 
 //===--------------------------------------------------------------------===//
-// InterRegisterRangesInterface Hooks
+// InferRegisterRangesInterface Hooks
 //===--------------------------------------------------------------------===//
 
 void AllocOp::inferResultRanges(
@@ -128,9 +127,7 @@ void AllocOp::inferResultRanges(
 }
 
 void DeallocateOp::inferResultRanges(ArrayRef<RegisterRanges>, SetRangeFn)
-{
-    return;
-}
+{ return; }
 
 void SplitOp::inferResultRanges(
     ArrayRef<RegisterRanges> argRanges,
@@ -163,8 +160,123 @@ void MergeOp::inferResultRanges(
 void MeasureOp::inferResultRanges(
     ArrayRef<RegisterRanges> argRanges,
     SetRangeFn setResultRanges)
+{ setResultRanges(getResult(), argRanges[0]); }
+
+//===--------------------------------------------------------------------===//
+// InferPhasePolynomialInterface Hooks
+//===--------------------------------------------------------------------===//
+
+void AllocOp::inferResultPolynomial(
+    [[maybe_unused]] ArrayRef<PhasePolynomial> argPolynomials,
+    SetPolynomialFn setResultPolynomials)
 {
-    setResultRanges(getResult(), argRanges[0]);
+    auto module = getOperation()->getParentOfType<qpu::QPUModuleOp>();
+    auto targets = module.getTargetsAttr();
+    if (!targets) {
+        getOperation()->emitError()
+            << "expected qpu.module to have a 'targets' attribute";
+        return;
+    }
+    auto target = llvm::dyn_cast<qpu::TargetAttr>(targets[0]);
+    size_t qubitCount = target.getQubits().getInt();
+
+    size_t allocatedQubitsBegin = getPos().value();
+    size_t allocatedQubitsEnd =
+        allocatedQubitsBegin + getResult().getType().getSize();
+
+    llvm::SmallVector<ConstantPhasePolynomial> values;
+    llvm::SmallVector<size_t> qubits;
+    for (size_t i = allocatedQubitsBegin; i < allocatedQubitsEnd; ++i) {
+        ConstantPhasePolynomial localResult(qubitCount, 0);
+        localResult.setBit(i);
+        values.push_back(localResult);
+        qubits.push_back(i);
+    }
+
+    PhasePolynomial resultPoly(values, qubits);
+    setResultPolynomials(getResult(), resultPoly);
+}
+
+void CNOTOp::inferResultPolynomial(
+    ArrayRef<PhasePolynomial> argPolynomials,
+    SetPolynomialFn setResultPolynomials)
+{
+    PhasePolynomial controlPoly = argPolynomials[0];
+    PhasePolynomial targetPoly = argPolynomials[1];
+
+    PhasePolynomial targetOutPoly =
+        PhasePolynomial::meet(controlPoly, targetPoly);
+
+    setResultPolynomials(getControlOut(), controlPoly);
+    setResultPolynomials(getTargetOut(), targetOutPoly);
+}
+
+void HOp::inferResultPolynomial(
+    ArrayRef<PhasePolynomial> argPolynomials,
+    SetPolynomialFn setResultPolynomials)
+{
+    /// H resets the phase polynomial to its qubits
+    auto resultPoly = argPolynomials[0].getValue();
+    auto qubits = argPolynomials[0].getQubit();
+    for (auto &&[poly, i] : llvm::zip_equal(resultPoly, qubits)) {
+        poly.reset();
+        poly.setBit(i);
+        poly.setEpoch(poly.getEpoch() + 1);
+    }
+
+    PhasePolynomial result(resultPoly, qubits);
+    setResultPolynomials(getResult(), result);
+}
+
+void BarrierOp::inferResultPolynomial(
+    ArrayRef<PhasePolynomial> argPolynomials,
+    SetPolynomialFn setResultPolynomials)
+{
+    /// H resets the phase polynomial to its qubits
+    for (size_t idx = 0; idx < getNumResults(); ++idx) {
+        auto resultPoly = argPolynomials[idx].getValue();
+        auto qubits = argPolynomials[idx].getQubit();
+        for (auto &&[poly, i] : llvm::zip_equal(resultPoly, qubits)) {
+            poly.reset();
+            poly.setBit(i);
+            poly.setEpoch(poly.getEpoch() + 1);
+        }
+
+        PhasePolynomial result(resultPoly, qubits);
+        auto val = getResults()[idx];
+        setResultPolynomials(val, result);
+    }
+}
+
+void SplitOp::inferResultPolynomial(
+    ArrayRef<PhasePolynomial> argPolynomials,
+    SetPolynomialFn setResultPolynomials)
+{
+    auto poly = argPolynomials[0].getValue();
+    auto qubits = argPolynomials[0].getQubit();
+    //  len(poly) == cnt(qubits)
+    size_t start = 0;
+    for (auto result : getResults()) {
+        size_t len = llvm::cast<QubitType>(result.getType()).getSize();
+        // take the slice [start,end]
+        llvm::SmallVector<ConstantPhasePolynomial> resultPoly(
+            poly.begin() + start,
+            poly.begin() + start + len);
+        llvm::SmallVector<size_t> resultQubits(
+            qubits.begin() + start,
+            qubits.begin() + start + len);
+        setResultPolynomials(result, PhasePolynomial{resultPoly, resultQubits});
+        start += len;
+    }
+}
+
+void SWAPOp::inferResultPolynomial(
+    ArrayRef<PhasePolynomial> argPolynomials,
+    SetPolynomialFn setResultPolynomials)
+{
+    // SWAP(a,b) = b,a
+    setResultPolynomials(getResultLhs(), argPolynomials[1]);
+    setResultPolynomials(getResultRhs(), argPolynomials[0]);
 }
 
 //===----------------------------------------------------------------------===//
@@ -232,7 +344,8 @@ LogicalResult rotationOpCanonicalize(OpTy op, PatternRewriter &rewriter)
     // --------------------
     // %1 = R_(%0, %theta1 + %theta2)
     if (auto otherRotation = op.getInput().template getDefiningOp<OpTy>()) {
-        // addf either folds the constant folded values or the result of addf
+        // addf either folds the constant folded values or the result of
+        // addf
         llvm::SmallVector<Value, 2> addfv;
         rewriter.createOrFold<arith::AddFOp>(
             addfv,
@@ -265,29 +378,19 @@ LogicalResult rotationOpCanonicalize(OpTy op, PatternRewriter &rewriter)
 } // namespace
 
 LogicalResult CRzOp::canonicalize(CRzOp op, PatternRewriter &rewriter)
-{
-    return controlledRotationOpCanonicalize(op, rewriter);
-}
+{ return controlledRotationOpCanonicalize(op, rewriter); }
 
 LogicalResult CRyOp::canonicalize(CRyOp op, PatternRewriter &rewriter)
-{
-    return controlledRotationOpCanonicalize(op, rewriter);
-}
+{ return controlledRotationOpCanonicalize(op, rewriter); }
 
 LogicalResult RzOp::canonicalize(RzOp op, PatternRewriter &rewriter)
-{
-    return rotationOpCanonicalize(op, rewriter);
-}
+{ return rotationOpCanonicalize(op, rewriter); }
 
 LogicalResult RxOp::canonicalize(RxOp op, PatternRewriter &rewriter)
-{
-    return rotationOpCanonicalize(op, rewriter);
-}
+{ return rotationOpCanonicalize(op, rewriter); }
 
 LogicalResult RyOp::canonicalize(RyOp op, PatternRewriter &rewriter)
-{
-    return rotationOpCanonicalize(op, rewriter);
-}
+{ return rotationOpCanonicalize(op, rewriter); }
 
 LogicalResult SXOp::canonicalize(SXOp op, PatternRewriter &rewriter)
 {
@@ -308,29 +411,21 @@ LogicalResult SXOp::canonicalize(SXOp op, PatternRewriter &rewriter)
 template<typename ConcreteType>
 LogicalResult foldHermitianTraitImpl(
     Operation* op,
-    ArrayRef<Attribute> operands,
+    [[maybe_unused]] ArrayRef<Attribute> operands,
     SmallVectorImpl<OpFoldResult> &results)
 {
-    if (op->getNumOperands() == 1) {
-        // Check for H * H
-        if (matchPattern(op->getOperand(0), m_Op<ConcreteType>())) {
-            // Add the other's operand to the results vector
-            auto otherOp = op->getOperand(0).getDefiningOp();
-            results.push_back(otherOp->getOperand(0));
-            return success();
-        }
-    } else if (
-        // x, z = CNOT(a, b); CNOT(x, z); := a, b
-        matchPattern(op->getOperand(0), m_Op<ConcreteType>())
-        && matchPattern(op->getOperand(1), m_Op<ConcreteType>())) {
-        if (op->getOperand(0).getDefiningOp()
-            == op->getOperand(1).getDefiningOp()) {
-            // Add the other's operands to the results vector
-            auto otherOp = op->getOperand(0).getDefiningOp();
-            results.push_back(otherOp->getOperand(0));
-            results.push_back(otherOp->getOperand(1));
-            return success();
-        }
+    // OUT11, ... , OUT1n = OP(IN1, ..., INn)
+    // OUT21, ..., OUT2n = OP(OUT11, ..., OUT1n)
+    // ------------------------------------------
+    // IN1, ..., INn
+    const auto otherOp = op->getOperand(0).getDefiningOp();
+    bool sameTypeAndOrigin = llvm::all_of(op->getOperands(), [&](Value v) {
+        return matchPattern(v, m_Op<ConcreteType>())
+               && v.getDefiningOp() == otherOp;
+    });
+    if (sameTypeAndOrigin) {
+        llvm::append_range(results, otherOp->getOperands());
+        return success();
     }
     return failure();
 }
@@ -342,22 +437,21 @@ LogicalResult Hermitian<ConcreteType>::foldTrait(
     Operation* op,
     ArrayRef<Attribute> operands,
     SmallVectorImpl<OpFoldResult> &results)
-{
-    return foldHermitianTraitImpl<ConcreteType>(op, operands, results);
-}
+{ return foldHermitianTraitImpl<ConcreteType>(op, operands, results); }
 
 // Free function implementation of foldTrait
 template<typename ConcreteType>
 LogicalResult foldUnitaryTraitImpl(
     Operation* op,
-    ArrayRef<Attribute> operands,
+    [[maybe_unused]] ArrayRef<Attribute> operands,
     SmallVectorImpl<OpFoldResult> &results)
 {
     if (op->getNumOperands() == 1) {
         // q1 = adjoint(op)(q); q2 = op(q1)
         // OR q1 = op; q2 = adjoint(op)(q1)
         auto otherOp = op->getOperand(0).getDefiningOp();
-        if (otherOp->hasTrait<AdjointTo<ConcreteType>::template Impl>()) {
+        if (otherOp
+            && otherOp->hasTrait<AdjointTo<ConcreteType>::template Impl>()) {
             results.push_back(otherOp->getOperand(0));
             return success();
         }
@@ -373,9 +467,7 @@ LogicalResult Unitary<ConcreteType>::foldTrait(
     Operation* op,
     ArrayRef<Attribute> operands,
     SmallVectorImpl<OpFoldResult> &results)
-{
-    return foldUnitaryTraitImpl<ConcreteType>(op, operands, results);
-}
+{ return foldUnitaryTraitImpl<ConcreteType>(op, operands, results); }
 
 //===----------------------------------------------------------------------===//
 // Verifier
@@ -409,67 +501,64 @@ LogicalResult SplitOp::verify()
     return success();
 }
 
-// NOTE: We assume N qubit device that may or may not have passive qubits.
-// The required qubits is thus the max qubit index regardless of topology.
-// LogicalResult DeviceOp::verify()
-// {
-//     int64_t num_qubits = getQubits();
-//     ArrayAttr coupling_graph = getCouplingGraph();
-
-//     // Check if the coupling graph is valid
-//     for (Attribute edge : coupling_graph) {
-//         // Each edge should be an array of two integers
-//         ArrayAttr edgeArray = dyn_cast<ArrayAttr>(edge);
-//         if (!edgeArray || edgeArray.size() != 2)
-//             return emitOpError(
-//                 "each edge in coupling graph must be an array of two
-//                 integers");
-
-//         for (Attribute qubit : edgeArray) {
-//             IntegerAttr qubitAttr = dyn_cast<IntegerAttr>(qubit);
-//             if (!qubitAttr)
-//                 return emitOpError("each qubit in edge must be an
-//                 integer");
-//             int64_t q = qubitAttr.getInt();
-//             if (q < 0 || q >= num_qubits)
-//                 return emitOpError(
-//                     "qubit index " + Twine(q)
-//                     + " is out of bounds for device with " +
-//                     Twine(num_qubits)
-//                     + " qubits");
-//         }
-//     }
-//     return success();
-// }
-
-template<typename ConcreteType>
-LogicalResult NoClone<ConcreteType>::verifyTrait(Operation* op)
+LogicalResult CtrlOp::verify()
 {
-    static auto sumUses = [](auto uses) {
-        return std::distance(uses.begin(), uses.end());
-    };
-
-    for (auto &value : op->getOpOperands()) {
-        // Ignore captured non-qubit types
-        if (!llvm::dyn_cast<quantum::QubitType>(value.get().getType()))
-            continue;
-        auto numUses = sumUses(value.get().getUses());
-        if (numUses > 1)
-            return op->emitOpError() << "qubit #" << value.getOperandNumber()
-                                     << " is used " << numUses << " times.";
+    const int64_t nctrls = getNctrls().getSExtValue();
+    if (nctrls < 1 || static_cast<uint64_t>(nctrls) > getInput().size())
+        return emitOpError(
+            "'nctrls' must be between one and the number of inputs");
+    for (Value control : getInput().take_front(nctrls))
+        if (cast<QubitType>(control.getType()).getSize() != 1)
+            return emitOpError("control operands must be single qubits");
+    if (getBody().empty()) return emitOpError("requires a non-empty body");
+    auto targets = getInput().drop_front(nctrls);
+    auto &block = getBody().front();
+    if (block.getNumArguments() != targets.size())
+        return emitOpError("body arguments must match the target operands");
+    for (auto [argument, target] :
+         llvm::zip_equal(block.getArguments(), targets)) {
+        if (argument.getType() != target.getType())
+            return emitOpError(
+                "body argument types must match the target operand types");
     }
+    return success();
+}
 
-    // Check whether the qubit values returned from an operation
-    // are uses more than a single time.
-    for (auto value : op->getOpResults()) {
-        if (!llvm::isa<quantum::QubitType>(value.getType())) continue;
-        if (sumUses(value.getUses()) > 1) {
-            return op->emitOpError()
-                   << "result qubit #" << value.getResultNumber()
-                   << " used more than once within the same block";
+LogicalResult CtrlOp::verifyRegions()
+{
+    if (!isa<YieldOp>(getBody().front().getTerminator()))
+        return emitOpError("body must terminate with quantum.yield");
+    // Classical captures are useful for gate parameters. Qubit captures would
+    // bypass the explicit state threading through region arguments and results.
+    auto walk = getBody().walk([&](Operation* op) {
+        for (Value operand : op->getOperands()) {
+            if (isa<QubitType>(operand.getType())
+                && !getBody().isAncestor(operand.getParentRegion())) {
+                op->emitOpError(
+                    "qubits must be passed through quantum.ctrl body "
+                    "arguments");
+                return WalkResult::interrupt();
+            }
         }
-    }
+        return WalkResult::advance();
+    });
+    return failure(walk.wasInterrupted());
+}
 
+LogicalResult YieldOp::verify()
+{
+    auto control = cast<CtrlOp>((*this)->getParentOp());
+    const int64_t nctrls = control.getNctrls().getSExtValue();
+    if (nctrls < 1 || static_cast<uint64_t>(nctrls) > control.getNumResults())
+        return emitOpError(
+            "enclosing quantum.ctrl has an invalid control count");
+    auto targets = control.getResult().drop_front(nctrls);
+    if (getNumOperands() != targets.size())
+        return emitOpError("must yield one value for each target result");
+    for (auto [operand, target] : llvm::zip_equal(getOperands(), targets))
+        if (operand.getType() != target.getType())
+            return emitOpError(
+                "operand types must match the target result types");
     return success();
 }
 
@@ -523,9 +612,7 @@ LogicalResult GateCallOp::verifySymbolUses(SymbolTableCollection &symbolTable)
 }
 
 FunctionType GateCallOp::getCalleeType()
-{
-    return FunctionType::get(getContext(), getOperandTypes(), getResultTypes());
-}
+{ return FunctionType::get(getContext(), getOperandTypes(), getResultTypes()); }
 
 //===----------------------------------------------------------------------===//
 // GateOp
@@ -563,13 +650,41 @@ void GateOp::build(
     if (argAttrs.empty()) return;
     assert(type.getNumInputs() == argAttrs.size());
     // call_interface_impl
-    function_interface_impl::addArgAndResultAttrs(
+    call_interface_impl::addArgAndResultAttrs(
         builder,
         state,
         argAttrs,
-        /*resultAttrs=*/std::nullopt,
+        /*resultAttrs=*/{},
         getArgAttrsAttrName(state.name),
         getResAttrsAttrName(state.name));
+}
+
+//===----------------------------------------------------------------------===//
+// CtrlOp
+//===----------------------------------------------------------------------===//
+
+void CtrlOp::build(
+    OpBuilder &builder,
+    OperationState &state,
+    ValueRange controls,
+    ValueRange targets)
+{
+    SmallVector<Value> operands;
+    llvm::append_range(operands, controls);
+    llvm::append_range(operands, targets);
+    ValueRange inputs(operands);
+    build(
+        builder,
+        state,
+        inputs.getTypes(),
+        inputs,
+        builder.getIndexAttr(controls.size()));
+
+    // Populate the region without changing the caller's insertion point.
+    // The caller supplies the body operations and yields the updated targets.
+    auto &block = state.regions.front()->emplaceBlock();
+    for (Value target : targets)
+        block.addArgument(target.getType(), state.location);
 }
 
 //===----------------------------------------------------------------------===//
