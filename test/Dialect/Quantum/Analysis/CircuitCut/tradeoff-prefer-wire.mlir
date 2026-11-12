@@ -1,7 +1,6 @@
-// RUN: quantum-opt -circuit-cut-analysis='target-width=3 allow-gate-cuts=true allow-wire-cuts=true reuse-policy=line emit-remarks=true' -verify-diagnostics %s
+// RUN: quantum-opt -circuit-cut-analysis='max-width=3 allow-gate-cuts=true allow-wire-cuts=true schedule-policy=force-directed emit-remarks=true' -verify-diagnostics %s
 
-// Both cut kinds allowed. One wire cut (cost 14) is cheaper than one gate cut
-// (cost 18), so the solver cuts a wire.
+// both cut kinds allowed, a wire cut is cheaper here, so the solver picks it
 func.func @tradeoff_prefer_wire()
     -> (!quantum.qubit<1>, !quantum.qubit<1>, !quantum.qubit<1>, !quantum.qubit<1>) {
   %a = "quantum.alloc"() : () -> !quantum.qubit<1>
